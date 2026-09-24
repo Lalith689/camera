@@ -1,0 +1,3 @@
+dependencies:
+  espressif/esp_video: "*"
+  espressif/esp_cam_sensor: "*"
