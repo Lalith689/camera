@@ -976,6 +976,15 @@ try:
     cv2.namedWindow("ESP32-P4 Live Stream (Press 'q' to exit)", cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback("ESP32-P4 Live Stream (Press 'q' to exit)", mouse_callback)
     
+    # Render clean initial status screen immediately so window never shows blank dark gray box
+    init_frame = np.zeros((800, 800, 3), dtype=np.uint8)
+    cv2.putText(init_frame, "CONNECTING TO ESP32-P4 CAMERA STREAM...", (80, 390),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(init_frame, "Please wait for video frames...", (200, 430),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    cv2.imshow("ESP32-P4 Live Stream (Press 'q' to exit)", init_frame)
+    cv2.waitKey(1)
+    
     while True:
         # Automatic 5.0s timeout disabled - target stays up indefinitely until physical bullet impact
         # if g_target_active and g_target_up_time is not None:
