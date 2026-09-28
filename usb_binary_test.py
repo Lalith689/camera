@@ -296,14 +296,16 @@ baud = args.baud
 servo_port = args.servo_port
 servo_baud = args.servo_baud
 
-print(f"Opening port {port} at {baud} baud (default DTR/RTS)...", flush=True)
-try:
-    ser = serial.Serial(port, baud, timeout=0.001)
-    ser.dtr = False
-    ser.rts = False
-except Exception as e:
-    print(f"Error: Could not open serial port {port}. Details: {e}", flush=True)
-    sys.exit(1)
+print(f"Opening port {port} at {baud} baud...", flush=True)
+ser = None
+while ser is None:
+    try:
+        ser = serial.Serial(port, baud, timeout=0.001)
+        ser.dtr = False
+        ser.rts = False
+    except Exception as e:
+        print(f"[PORT_LOCKED] Could not open serial port {port} ({e}). Retrying in 2s... (Close any active serial monitor/terminal)", flush=True)
+        time.sleep(2.0)
 
 # Open servo serial port
 print(f"Opening servo controller port {servo_port} at {servo_baud} baud...", flush=True)
