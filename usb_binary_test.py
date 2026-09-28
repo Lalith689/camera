@@ -882,6 +882,90 @@ def mouse_callback(event, x, y, flags, param):
 # Pre-calculate Universal Gamma Correction table (gamma=1.2) to optimize frame loop CPU usage
 gamma = 1.2
 invGamma = 1.0 / gamma
+def handle_key(key):
+    global g_active_target_id, g_target_active, g_target_up_time, clicked_pts, manual_mode
+    global g_calibrated_corners, g_H, g_H_inv, g_bg_warped, g_bg_warped_bgr, g_prev_warped
+    global g_state, g_impact_frames, g_shot_info, servo_ser
+
+    if key == 255 or key == 0xFF or key == -1:
+        return
+    if key == ord('q'):
+        raise KeyboardInterrupt
+    elif ord('1') <= key <= ord('7'):
+        t_idx = key - ord('0')
+        g_active_target_id = f"T-0{t_idx}"
+        g_target_active = True
+        g_target_up_time = None  # Keep target UP during calibration setup
+        clicked_pts = []
+        manual_mode = True
+        
+        if t_idx in g_target_calibrations and g_target_calibrations[t_idx] is not None:
+            g_calibrated_corners = g_target_calibrations[t_idx]["corners"].copy()
+            g_H = g_target_calibrations[t_idx]["H"].copy()
+            g_H_inv = g_target_calibrations[t_idx]["H_inv"].copy()
+            send_calibration(g_calibrated_corners)
+            print(f"[CALIB] Selected Target T-0{t_idx} (Existing calibration loaded). Click 4 corners to re-calibrate.", flush=True)
+        else:
+            g_calibrated_corners = None
+            g_H = None
+            g_H_inv = None
+            print(f"[CALIB] Selected Target T-0{t_idx} for Calibration. Click 4 corners (TL, TR, BR, BL) in stream.", flush=True)
+        
+        if servo_ser:
+            try:
+                cmd_str = f"UP,{t_idx}\n"
+                servo_ser.write(cmd_str.encode())
+                servo_ser.flush()
+                print(f"[SERVO] Sent UP command for Target T-0{t_idx}", flush=True)
+            except Exception as ex:
+                print(f"[SERVO] Error writing raise command: {ex}", flush=True)
+    elif key == ord('f'):
+        t_idx = parse_target_index(g_active_target_id) if g_active_target_id else 1
+        if len(clicked_pts) == 4:
+            sorted_pts = sort_corners(np.array(clicked_pts, dtype="float32"))
+            send_calibration(sorted_pts)
+            g_calibrated_corners = sorted_pts
+            clicked_pts = []
+            print(f"[CALIB] Locked & saved Target T-0{t_idx} calibration into target_calibrations.json!", flush=True)
+        elif g_calibrated_corners is not None:
+            send_calibration(g_calibrated_corners)
+            print(f"[CALIB] Re-locked Target T-0{t_idx} calibration!", flush=True)
+        else:
+            print(f"[CALIB] Please click 4 corners first before pressing 'f' to lock!", flush=True)
+    elif key == ord('s'):
+        g_target_active = not g_target_active
+        g_calibrated_corners = None
+        g_bg_warped = None
+        g_state = STATE_IDLE
+        g_impact_frames = []
+        print(f"[SYSTEM] Manually toggled Target Active = {g_target_active}", flush=True)
+    elif key == ord('c'):
+        g_calibrated_corners = None
+        g_H = None
+        g_H_inv = None
+        clicked_pts = []
+        manual_mode = True
+        print("[SYSTEM] Entered Manual Calibration mode. Please click 4 corners.", flush=True)
+    elif key == ord('a'):
+        g_calibrated_corners = None
+        g_H = None
+        g_H_inv = None
+        clicked_pts = []
+        manual_mode = False
+        print("[SYSTEM] Auto-calibration enabled.", flush=True)
+    elif key == ord('r'):
+        if len(clicked_pts) > 0:
+            clicked_pts = []
+            print(f"[CALIB] Reset corner selections for active target. Click 4 corners again.", flush=True)
+        else:
+            g_bg_warped = None
+            g_bg_warped_bgr = None
+            g_prev_warped = None
+            g_state = STATE_IDLE
+            g_impact_frames = []
+            g_shot_info = None
+            print("[SYSTEM] Target reference background frame reset.", flush=True)
+
 gamma_table = np.array([((i / 255.0) ** invGamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
 
 try:
@@ -1259,82 +1343,7 @@ try:
                             cv2.imshow("ESP32-P4 Live Stream (Press 'q' to exit)", img_sharp)
                             
                             key = cv2.waitKey(1) & 0xFF
-                            if key == ord('q'):
-                                raise KeyboardInterrupt
-                            elif ord('1') <= key <= ord('7'):
-                                t_idx = key - ord('0')
-                                g_active_target_id = f"T-0{t_idx}"
-                                g_target_active = True
-                                g_target_up_time = None  # Keep target UP during calibration setup
-                                clicked_pts = []
-                                manual_mode = True
-                                
-                                if t_idx in g_target_calibrations and g_target_calibrations[t_idx] is not None:
-                                    g_calibrated_corners = g_target_calibrations[t_idx]["corners"].copy()
-                                    g_H = g_target_calibrations[t_idx]["H"].copy()
-                                    g_H_inv = g_target_calibrations[t_idx]["H_inv"].copy()
-                                    send_calibration(g_calibrated_corners)
-                                    print(f"[CALIB] Selected Target T-0{t_idx} (Existing calibration loaded). Click 4 corners to re-calibrate.", flush=True)
-                                else:
-                                    g_calibrated_corners = None
-                                    g_H = None
-                                    g_H_inv = None
-                                    print(f"[CALIB] Selected Target T-0{t_idx} for Calibration. Click 4 corners (TL, TR, BR, BL) in stream.", flush=True)
-                                
-                                if servo_ser:
-                                    try:
-                                        cmd_str = f"UP,{t_idx}\n"
-                                        servo_ser.write(cmd_str.encode())
-                                        servo_ser.flush()
-                                        print(f"[SERVO] Sent UP command for Target T-0{t_idx}", flush=True)
-                                    except Exception as ex:
-                                        print(f"[SERVO] Error writing raise command: {ex}", flush=True)
-                            elif key == ord('f'):
-                                t_idx = parse_target_index(g_active_target_id) if g_active_target_id else 1
-                                if len(clicked_pts) == 4:
-                                    sorted_pts = sort_corners(np.array(clicked_pts, dtype="float32"))
-                                    send_calibration(sorted_pts)
-                                    g_calibrated_corners = sorted_pts
-                                    clicked_pts = []
-                                    print(f"[CALIB] Locked & saved Target T-0{t_idx} calibration into target_calibrations.json!", flush=True)
-                                elif g_calibrated_corners is not None:
-                                    send_calibration(g_calibrated_corners)
-                                    print(f"[CALIB] Re-locked Target T-0{t_idx} calibration!", flush=True)
-                                else:
-                                    print(f"[CALIB] Please click 4 corners first before pressing 'f' to lock!", flush=True)
-                            elif key == ord('s'):
-                                g_target_active = not g_target_active
-                                g_calibrated_corners = None
-                                g_bg_warped = None
-                                g_state = STATE_IDLE
-                                g_impact_frames = []
-                                print(f"[SYSTEM] Manually toggled Target Active = {g_target_active}", flush=True)
-                            elif key == ord('c'):
-                                g_calibrated_corners = None
-                                g_H = None
-                                g_H_inv = None
-                                clicked_pts = []
-                                manual_mode = True
-                                print("[SYSTEM] Entered Manual Calibration mode. Please click 4 corners.", flush=True)
-                            elif key == ord('a'):
-                                g_calibrated_corners = None
-                                g_H = None
-                                g_H_inv = None
-                                clicked_pts = []
-                                manual_mode = False
-                                print("[SYSTEM] Auto-calibration enabled.", flush=True)
-                            elif key == ord('r'):
-                                if len(clicked_pts) > 0:
-                                    clicked_pts = []
-                                    print(f"[CALIB] Reset corner selections for active target. Click 4 corners again.", flush=True)
-                                else:
-                                    g_bg_warped = None
-                                    g_bg_warped_bgr = None
-                                    g_prev_warped = None
-                                    g_state = STATE_IDLE
-                                    g_impact_frames = []
-                                    g_shot_info = None
-                                    print("[SYSTEM] Target reference background frame reset.", flush=True)
+                            handle_key(key)
                                 
                     except Exception as e:
                         print(f"Frame processing error: {e}", flush=True)
@@ -1342,6 +1351,11 @@ try:
                 buffer = buffer[total_packet_len:]
             else:
                 buffer = buffer[1:]
+                
+        # Keep OpenCV window GUI event loop pumping continuously on every iteration
+        k = cv2.waitKey(1) & 0xFF
+        if k != 255:
+            handle_key(k)
                 
 except KeyboardInterrupt:
     print("\nStopping receiver script...", flush=True)
