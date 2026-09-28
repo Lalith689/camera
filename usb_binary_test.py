@@ -299,6 +299,8 @@ servo_baud = args.servo_baud
 print(f"Opening port {port} at {baud} baud (default DTR/RTS)...", flush=True)
 try:
     ser = serial.Serial(port, baud, timeout=0.001)
+    ser.dtr = False
+    ser.rts = False
 except Exception as e:
     print(f"Error: Could not open serial port {port}. Details: {e}", flush=True)
     sys.exit(1)
