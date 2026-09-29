@@ -855,6 +855,33 @@ def broadcast_target_state(target_id, is_active):
             
     asyncio.run_coroutine_threadsafe(send_to_all(), g_loop)
 
+def send_wireless_wifi_command(cmd_str):
+    """Dispatches command wirelessly over Wi-Fi HTTP (192.168.4.1) and UDP (port 4210) to target ESP32."""
+    cmd_str = cmd_str.strip()
+    
+    def _send():
+        # UDP fast packet
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.settimeout(0.2)
+            sock.sendto(cmd_str.encode('utf-8'), ('192.168.4.1', 4210))
+            sock.sendto(cmd_str.encode('utf-8'), ('255.255.255.255', 4210))
+            sock.close()
+        except Exception:
+            pass
+        # HTTP GET fallback
+        try:
+            import urllib.request
+            url = f"http://192.168.4.1/cmd?action={cmd_str}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=0.4) as resp:
+                pass
+        except Exception:
+            pass
+
+    threading.Thread(target=_send, daemon=True).start()
+
 def raise_target_physically(target_id=1):
     global g_target_active, g_active_target_id, g_bg_warped, g_bg_warped_bgr, g_state, g_impact_frames, g_target_up_time, servo_ser, g_calibrated_corners, g_H, g_H_inv
     print(f"[SYSTEM] Raising target {target_id}...", flush=True)
@@ -878,12 +905,16 @@ def raise_target_physically(target_id=1):
         send_calibration(g_calibrated_corners)
         print(f"[CALIBRATION] Switched to pre-saved calibration preset for Target {t_idx}!", flush=True)
         
+    cmd_str = f"UP,{t_idx}"
+    # Send via Wireless Wi-Fi / UDP
+    send_wireless_wifi_command(cmd_str)
+    
+    # Send via USB Serial (if connected)
     if 'servo_ser' in globals() and servo_ser and 1 <= t_idx <= 7:
         try:
-            cmd_str = f"UP,{t_idx}\n"
-            servo_ser.write(cmd_str.encode())
+            servo_ser.write(f"{cmd_str}\n".encode())
             servo_ser.flush()
-            print(f"[SERVO] Sent command '{cmd_str.strip()}' to servo controller", flush=True)
+            print(f"[SERVO] Sent command '{cmd_str}' to servo controller", flush=True)
         except Exception as ex:
             print(f"[SERVO] Error writing raise command: {ex}", flush=True)
 
@@ -914,13 +945,16 @@ def drop_active_target_physically():
     if t_id is not None:
         broadcast_target_state(t_id, False)
         
-    # Send physical DOWN command to Arduino servo board
+    cmd_str = f"DOWN,{t_idx if t_idx is not None else 1}"
+    # Send via Wireless Wi-Fi / UDP
+    send_wireless_wifi_command(cmd_str)
+    
+    # Send physical DOWN command to Arduino servo board (if connected via USB Serial)
     if servo_ser and t_idx is not None and 1 <= t_idx <= 7:
         try:
-            cmd_str = f"DOWN,{t_idx}\n"
-            servo_ser.write(cmd_str.encode())
+            servo_ser.write(f"{cmd_str}\n".encode())
             servo_ser.flush()
-            print(f"[SERVO] Auto-sent lower command '{cmd_str.strip()}' to drop target", flush=True)
+            print(f"[SERVO] Auto-sent lower command '{cmd_str}' to drop target", flush=True)
         except Exception as ex:
             print(f"[SERVO] Error writing drop command: {ex}", flush=True)
 
