@@ -21,8 +21,8 @@ CALIBRATION_FILE = "target_calibrations.json"
 g_target_calibrations = {i: None for i in range(1, 8)}
 
 # --- TARGET MAPPING & OPTIMAL ZONE CONFIGURATION ---
-OPTIMAL_CIRCLE_RADIUS_MM = 30.0  # 30.0 mm radius (6.0 cm diameter circle)
-OPTIMAL_CIRCLE_RADIUS_PX = int(OPTIMAL_CIRCLE_RADIUS_MM * 10.0)  # 300 px radius
+OPTIMAL_CIRCLE_RADIUS_MM = 34.0  # 34.0 mm radius (6.8 cm diameter circle)
+OPTIMAL_CIRCLE_RADIUS_PX = int(OPTIMAL_CIRCLE_RADIUS_MM * 10.0)  # 340 px radius
 
 def parse_target_index(target_id):
     """Parses target index integer (1 to 7) from string or int."""
