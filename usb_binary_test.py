@@ -490,19 +490,19 @@ def detect_orange_tip_hsv(warped_img):
     hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
     h_img, w_img = warped_img.shape[:2]
     
-    # Bright Vibrant Orange Tip HSV Range (Hue 4 to 22 / 165 to 180, Sat >= 110, Val >= 110)
-    lower_orange1 = np.array([4, 110, 110])
-    upper_orange1 = np.array([22, 255, 255])
-    lower_orange2 = np.array([165, 110, 110])
+    # Bright Vibrant Orange Tip HSV Range (Hue 0 to 25 / 160 to 180, Sat >= 40, Val >= 40)
+    lower_orange1 = np.array([0, 40, 40])
+    upper_orange1 = np.array([25, 255, 255])
+    lower_orange2 = np.array([160, 40, 40])
     upper_orange2 = np.array([180, 255, 255])
     
     m1 = cv2.inRange(hsv, lower_orange1, upper_orange1)
     m2 = cv2.inRange(hsv, lower_orange2, upper_orange2)
     orange_mask = cv2.bitwise_or(m1, m2)
     
-    # Restrict search area to inner target card area (40, 40) to (810, 680)
+    # Restrict search area to inner target card area (15, 15) to (w_img - 15, h_img - 15)
     target_mask = np.zeros((h_img, w_img), dtype=np.uint8)
-    cv2.rectangle(target_mask, (40, 40), (w_img - 40, h_img - 100), 255, -1)
+    cv2.rectangle(target_mask, (15, 15), (w_img - 15, h_img - 15), 255, -1)
     orange_mask = cv2.bitwise_and(orange_mask, target_mask)
     
     kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -514,7 +514,7 @@ def detect_orange_tip_hsv(warped_img):
     best_area = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if 80 <= area <= 25000:
+        if 30 <= area <= 35000:
             if area > best_area:
                 best_area = area
                 best_cnt = cnt
@@ -1340,10 +1340,14 @@ try:
                                 warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
                                 warped_gray = cv2.GaussianBlur(warped_gray, (5, 5), 0)
                                 
-                                # Real-Time Nerf Orange Tip & Laser Detection
+                                # Real-Time Nerf Bullet (Yellow Foam + Orange Tip), Foreign Object & Laser Detection
                                 laser_pt = None
-                                if g_bg_warped is not None and (g_target_up_time is None or (time.time() - g_target_up_time > 1.2)):
-                                    laser_pt = detect_orange_tip_hsv(warped)
+                                if g_target_up_time is None or (time.time() - g_target_up_time > 0.3):
+                                    laser_pt = detect_nerf_dart_hsv(warped)
+                                    if laser_pt is None:
+                                        laser_pt = detect_orange_tip_hsv(warped)
+                                    if laser_pt is None and g_bg_warped is not None:
+                                        laser_pt = detect_universal_foreign_object(warped, warped_gray, g_bg_warped_bgr, g_bg_warped)
                                     if laser_pt is None:
                                         laser_pt = detect_laser_hsv(warped)
                                     
