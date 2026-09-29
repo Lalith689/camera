@@ -10,12 +10,30 @@ import asyncio
 import websockets
 import json
 import threading
-
 import argparse
+
+try:
+    from fastapi import FastAPI
+    from fastapi.responses import StreamingResponse
+    from fastapi.middleware.cors import CORSMiddleware
+    import uvicorn
+    HAS_FASTAPI = True
+except ImportError:
+    HAS_FASTAPI = False
 
 g_ws_clients = set()
 g_loop = None
 g_active_target_id = None
+g_stream_lock = threading.Lock()
+g_stream_frame_bgr = None
+g_telemetry_metrics = {
+    "hit": False,
+    "fps": 0.0,
+    "target_active": False,
+    "active_target_id": 1,
+    "last_shot": None
+}
+
 # --- MULTI-TARGET PRESET CALIBRATION ENGINE (TARGETS 1 - 7) ---
 CALIBRATION_FILE = "target_calibrations.json"
 g_target_calibrations = {i: None for i in range(1, 8)}
@@ -284,6 +302,89 @@ def broadcast_shot(is_hit, x_ratio, y_ratio):
 # Start WebSocket Server in daemon thread
 ws_thread = threading.Thread(target=start_ws_server, daemon=True)
 ws_thread.start()
+
+if HAS_FASTAPI:
+    fastapi_app = FastAPI(title="Snyptr-Rail Dedicated CV Backend", version="2.0")
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    def generate_mjpeg_stream():
+        """Generates continuous MJPEG multipart stream for dashboard.html."""
+        while True:
+            frame = None
+            with g_stream_lock:
+                if g_stream_frame_bgr is not None:
+                    frame = g_stream_frame_bgr.copy()
+            if frame is not None:
+                ret, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+            time.sleep(0.033)
+
+    @fastapi_app.get("/video_feed")
+    def video_feed():
+        """Live MJPEG video feed for snyptr-rail dashboard."""
+        return StreamingResponse(generate_mjpeg_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    @fastapi_app.get("/metrics")
+    def get_metrics():
+        """Live JSON telemetry for snyptr-rail dashboard."""
+        with g_stream_lock:
+            return g_telemetry_metrics
+
+    @fastapi_app.api_route("/cmd", methods=["GET", "POST"])
+    def api_cmd(action: str = "STATUS"):
+        act = action.upper().strip()
+        if act.startswith("UP,"):
+            try:
+                t_idx = int(act.split(",")[1])
+            except:
+                t_idx = 1
+            raise_target_physically(t_idx)
+            return {"status": "SUCCESS", "action": act}
+        elif act.startswith("DOWN,"):
+            try:
+                t_idx = int(act.split(",")[1])
+            except:
+                t_idx = 1
+            drop_active_target_physically()
+            return {"status": "SUCCESS", "action": act}
+        return {"status": "OK", "action": act}
+
+    @fastapi_app.api_route("/pop", methods=["GET", "POST"])
+    def api_pop(id: int = 1):
+        raise_target_physically(id)
+        return {"status": "POP", "target_id": id}
+
+    @fastapi_app.api_route("/fold", methods=["GET", "POST"])
+    def api_fold(id: int = 1):
+        drop_active_target_physically()
+        return {"status": "FOLD", "target_id": id}
+
+    @fastapi_app.api_route("/arm", methods=["GET", "POST"])
+    def api_arm(id: int = 1):
+        raise_target_physically(id)
+        return {"status": "ARMED", "target_id": id}
+
+    @fastapi_app.api_route("/drop", methods=["GET", "POST"])
+    def api_drop(id: int = 1):
+        drop_active_target_physically()
+        return {"status": "DOWN", "target_id": id}
+
+    def start_fastapi_server():
+        def run_uvicorn():
+            uvicorn.run(fastapi_app, host="0.0.0.0", port=8001, log_level="warning")
+        t = threading.Thread(target=run_uvicorn, daemon=True)
+        t.start()
+        print("[FASTAPI] Video feed & telemetry API running on http://localhost:8001/video_feed", flush=True)
+
+    start_fastapi_server()
 
 # Reconfigure stdout to use UTF-8 to prevent cp1252 mapping crashes on Windows
 sys.stdout.reconfigure(encoding='utf-8')
@@ -718,6 +819,38 @@ def broadcast_target_state(target_id, is_active):
             await asyncio.gather(*[client.send(msg) for client in g_ws_clients], return_exceptions=True)
             
     asyncio.run_coroutine_threadsafe(send_to_all(), g_loop)
+
+def raise_target_physically(target_id=1):
+    global g_target_active, g_active_target_id, g_bg_warped, g_bg_warped_bgr, g_state, g_impact_frames, g_target_up_time, servo_ser, g_calibrated_corners, g_H, g_H_inv
+    print(f"[SYSTEM] Raising target {target_id}...", flush=True)
+    g_active_target_id = target_id
+    g_bg_warped = None
+    g_bg_warped_bgr = None
+    g_target_active = True
+    g_state = STATE_IDLE
+    g_impact_frames = []
+    g_target_up_time = time.time()
+    
+    t_idx = parse_target_index(target_id)
+    if not t_idx:
+        t_idx = 1
+        
+    if t_idx in g_target_calibrations and g_target_calibrations[t_idx] is not None:
+        preset = g_target_calibrations[t_idx]
+        g_calibrated_corners = preset["corners"].copy()
+        g_H = preset["H"].copy()
+        g_H_inv = preset["H_inv"].copy()
+        send_calibration(g_calibrated_corners)
+        print(f"[CALIBRATION] Switched to pre-saved calibration preset for Target {t_idx}!", flush=True)
+        
+    if 'servo_ser' in globals() and servo_ser and 1 <= t_idx <= 7:
+        try:
+            cmd_str = f"UP,{t_idx}\n"
+            servo_ser.write(cmd_str.encode())
+            servo_ser.flush()
+            print(f"[SERVO] Sent command '{cmd_str.strip()}' to servo controller", flush=True)
+        except Exception as ex:
+            print(f"[SERVO] Error writing raise command: {ex}", flush=True)
 
 def drop_active_target_physically():
     global g_target_active, g_active_target_id, servo_ser
@@ -1396,6 +1529,21 @@ try:
                                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
                                         
                             cv2.imshow("ESP32-P4 Live Stream (Press 'q' to exit)", img_sharp)
+
+                            # Update FastAPI MJPEG video stream frame & telemetry metrics
+                            with g_stream_lock:
+                                if g_calibrated_corners is not None and 'warped' in locals() and warped is not None:
+                                    g_stream_frame_bgr = warped.copy()
+                                else:
+                                    g_stream_frame_bgr = img_sharp.copy()
+
+                                g_telemetry_metrics = {
+                                    "hit": g_shot_info is not None and (time.time() - g_shot_info["timestamp"] < 3.0) and (g_shot_info.get("zone") == 1),
+                                    "fps": round(fps_display, 1),
+                                    "target_active": g_target_active,
+                                    "active_target_id": g_active_target_id,
+                                    "last_shot": g_shot_info
+                                }
                             
                             key = cv2.waitKey(1) & 0xFF
                             handle_key(key)
