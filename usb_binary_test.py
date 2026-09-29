@@ -20,6 +20,10 @@ g_active_target_id = None
 CALIBRATION_FILE = "target_calibrations.json"
 g_target_calibrations = {i: None for i in range(1, 8)}
 
+# --- TARGET MAPPING & OPTIMAL ZONE CONFIGURATION ---
+OPTIMAL_CIRCLE_RADIUS_MM = 30.0  # 30.0 mm radius (6.0 cm diameter circle)
+OPTIMAL_CIRCLE_RADIUS_PX = int(OPTIMAL_CIRCLE_RADIUS_MM * 10.0)  # 300 px radius
+
 def parse_target_index(target_id):
     """Parses target index integer (1 to 7) from string or int."""
     if isinstance(target_id, int):
@@ -296,16 +300,12 @@ baud = args.baud
 servo_port = args.servo_port
 servo_baud = args.servo_baud
 
-print(f"Opening port {port} at {baud} baud...", flush=True)
-ser = None
-while ser is None:
-    try:
-        ser = serial.Serial(port, baud, timeout=0.001)
-        ser.dtr = False
-        ser.rts = False
-    except Exception as e:
-        print(f"[PORT_LOCKED] Could not open serial port {port} ({e}). Retrying in 2s... (Close any active serial monitor/terminal)", flush=True)
-        time.sleep(2.0)
+print(f"Opening port {port} at {baud} baud (default DTR/RTS)...", flush=True)
+try:
+    ser = serial.Serial(port, baud, timeout=0.001)
+except Exception as e:
+    print(f"Error: Could not open serial port {port}. Details: {e}", flush=True)
+    sys.exit(1)
 
 # Open servo serial port
 print(f"Opening servo controller port {servo_port} at {servo_baud} baud...", flush=True)
@@ -378,9 +378,58 @@ def sort_corners(pts):
     rect[3] = pts[np.argmax(diff)]  # Bottom-Left
     return rect
 
+def detect_orange_tip_hsv(warped_img):
+    """
+    Detects the bright Orange Rubber Tip of a Nerf bullet in HSV color space.
+    Returns (wpx, wpy) centroid of the orange tip in 850x780 warped space, or None if not present.
+    """
+    if warped_img is None:
+        return None
+        
+    hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
+    h_img, w_img = warped_img.shape[:2]
+    
+    # Bright Vibrant Orange Tip HSV Range (Hue 4 to 22 / 165 to 180, Sat >= 110, Val >= 110)
+    lower_orange1 = np.array([4, 110, 110])
+    upper_orange1 = np.array([22, 255, 255])
+    lower_orange2 = np.array([165, 110, 110])
+    upper_orange2 = np.array([180, 255, 255])
+    
+    m1 = cv2.inRange(hsv, lower_orange1, upper_orange1)
+    m2 = cv2.inRange(hsv, lower_orange2, upper_orange2)
+    orange_mask = cv2.bitwise_or(m1, m2)
+    
+    # Restrict search area to inner target card area (40, 40) to (810, 680)
+    target_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    cv2.rectangle(target_mask, (40, 40), (w_img - 40, h_img - 100), 255, -1)
+    orange_mask = cv2.bitwise_and(orange_mask, target_mask)
+    
+    kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    orange_mask = cv2.morphologyEx(orange_mask, cv2.MORPH_OPEN, kernel3)
+    
+    contours, _ = cv2.findContours(orange_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    best_cnt = None
+    best_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if 80 <= area <= 25000:
+            if area > best_area:
+                best_area = area
+                best_cnt = cnt
+                
+    if best_cnt is not None:
+        M = cv2.moments(best_cnt)
+        if M["m00"] > 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            return (cx, cy)
+            
+    return None
+
 def detect_laser_hsv(warped_img):
     """
-    Robustly detects an emissive red laser dot in HSV color space.
+    Robustly detects an intensely bright red laser dot in HSV color space.
     Returns (wpx, wpy) in 850x780 warped space, or None if not found.
     """
     if warped_img is None:
@@ -388,20 +437,20 @@ def detect_laser_hsv(warped_img):
         
     hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
     
-    # Red laser hue ranges - require high saturation (S>=120) and brightness (V>=200)
-    lower_red1 = np.array([0, 120, 200])
-    upper_red1 = np.array([15, 255, 255])
-    lower_red2 = np.array([160, 120, 200])
+    # Red laser hue ranges - require ultra high saturation (S>=180) and brightness (V>=220) to prevent table reflections
+    lower_red1 = np.array([0, 180, 220])
+    upper_red1 = np.array([12, 255, 255])
+    lower_red2 = np.array([168, 180, 220])
     upper_red2 = np.array([180, 255, 255])
     
     mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
     mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
     red_mask = cv2.bitwise_or(mask1, mask2)
     
-    # Restrict detection to inner target card area (40, 40) to (810, 710)
+    # Restrict detection to inner target card area (40, 40) to (810, 680)
     h_img, w_img = warped_img.shape[:2]
     target_mask = np.zeros((h_img, w_img), dtype=np.uint8)
-    cv2.rectangle(target_mask, (40, 40), (w_img - 40, h_img - 70), 255, -1)
+    cv2.rectangle(target_mask, (40, 40), (w_img - 40, h_img - 100), 255, -1)
     red_mask = cv2.bitwise_and(red_mask, target_mask)
     
     contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -410,7 +459,7 @@ def detect_laser_hsv(warped_img):
     best_area = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if 1.0 <= area <= 400:
+        if 1.0 <= area <= 300:
             if area > best_area:
                 best_area = area
                 M = cv2.moments(cnt)
@@ -813,8 +862,8 @@ def process_shot_event(settled_gray, mask, settled_bgr=None):
     elif scoring_radius <= 28.0:
         score_ring = 1
         
-    # 4. Classify Zone based on physical distance (inside optimal green circle radius 38.0mm = 7.6cm diameter)
-    is_hit = distance <= 38.0
+    # 4. Classify Zone based on physical distance (inside optimal green circle radius 30.0mm = 6.0cm diameter)
+    is_hit = distance <= OPTIMAL_CIRCLE_RADIUS_MM
         
     zone = 1 if is_hit else 2 # 1 = Green (HIT/OPTIMAL), 2 = Red (MISS/NON-OPTIMAL)
     
@@ -975,15 +1024,6 @@ gamma_table = np.array([((i / 255.0) ** invGamma) * 255 for i in np.arange(0, 25
 try:
     cv2.namedWindow("ESP32-P4 Live Stream (Press 'q' to exit)", cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback("ESP32-P4 Live Stream (Press 'q' to exit)", mouse_callback)
-    
-    # Render clean initial status screen immediately so window never shows blank dark gray box
-    init_frame = np.zeros((800, 800, 3), dtype=np.uint8)
-    cv2.putText(init_frame, "CONNECTING TO ESP32-P4 CAMERA STREAM...", (80, 390),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-    cv2.putText(init_frame, "Please wait for video frames...", (200, 430),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-    cv2.imshow("ESP32-P4 Live Stream (Press 'q' to exit)", init_frame)
-    cv2.waitKey(1)
     
     while True:
         # Automatic 5.0s timeout disabled - target stays up indefinitely until physical bullet impact
@@ -1167,10 +1207,12 @@ try:
                                 warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
                                 warped_gray = cv2.GaussianBlur(warped_gray, (5, 5), 0)
                                 
-                                # Laser Pointer Real-Time Detection
+                                # Real-Time Nerf Orange Tip & Laser Detection
                                 laser_pt = None
                                 if g_bg_warped is not None and (g_target_up_time is None or (time.time() - g_target_up_time > 1.2)):
-                                    laser_pt = detect_laser_hsv(warped)
+                                    laser_pt = detect_orange_tip_hsv(warped)
+                                    if laser_pt is None:
+                                        laser_pt = detect_laser_hsv(warped)
                                     
                                 laser_hit_triggered = False
                                 if laser_pt is not None:
@@ -1181,7 +1223,7 @@ try:
                                     ly_rel_mm = -(y_mm - 39.0)
                                     
                                     dist = np.sqrt(lx_rel_mm**2 + ly_rel_mm**2)
-                                    is_hit = dist <= 38.0
+                                    is_hit = dist <= OPTIMAL_CIRCLE_RADIUS_MM
                                     zone = 1 if is_hit else 2
                                     
                                     if not g_laser_was_present:
@@ -1204,7 +1246,7 @@ try:
                                             trigger_target_down_on_hit()
                                         
                                         zone_name = "GREEN ZONE - HIT" if zone == 1 else "RED ZONE - MISS"
-                                        print(f"\n >>> [LASER SHOT] X: {lx_rel_mm:+.2f} mm | Y: {ly_rel_mm:+.2f} mm | Zone: {zone_name}", flush=True)
+                                        print(f"\n >>> [NERF ORANGE TIP DETECTED] X: {lx_rel_mm:+.2f} mm | Y: {ly_rel_mm:+.2f} mm | Zone: {zone_name}", flush=True)
                                         g_laser_was_present = True
                                     
                                     laser_hit_triggered = True
@@ -1273,8 +1315,8 @@ try:
                                                 
                                     g_prev_warped = warped_gray.copy()
                                     
-                                # Draw optimal Green Zone circle on warped view (Center: 425, 390 | Radius: 380px = 38mm)
-                                cv2.circle(warped, (425, 390), 380, (0, 255, 0), 2)
+                                # Draw optimal Green Zone circle on warped view (Center: 425, 390 | Radius: 300px = 30mm)
+                                cv2.circle(warped, (425, 390), OPTIMAL_CIRCLE_RADIUS_PX, (0, 255, 0), 2)
                                 
                                 # Draw hit crosshair on warped monitor
                                 if g_shot_info is not None and time.time() - g_shot_info["timestamp"] < 5.0:
