@@ -9,7 +9,7 @@ echo   4. WebSocket Server  : ws://localhost:8765
 echo ===============================================================================
 
 echo Starting HTTP Dashboard Web Server on Port 8000...
-start "Snyptr Rail Dashboard WebServer" cmd /c "python -m http.server 8000"
+start /b python -m http.server 8000 >nul 2>&1
 
 timeout /t 2 >nul
 echo Opening Snyptr Rail Dashboard in browser...
