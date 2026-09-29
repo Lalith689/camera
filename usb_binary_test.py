@@ -396,7 +396,42 @@ parser.add_argument("--servo-port", type=str, default="COM4", help="COM port of 
 parser.add_argument("--servo-baud", type=int, default=115200, help="Baud rate for target servo board")
 args = parser.parse_args()
 
-port = args.port
+try:
+    import serial.tools.list_ports
+    HAS_LIST_PORTS = True
+except ImportError:
+    HAS_LIST_PORTS = False
+
+def auto_detect_esp32_port(preferred_port="COM15"):
+    """Scans available system COM ports to auto-detect the ESP32-P4 camera board."""
+    if not HAS_LIST_PORTS:
+        return preferred_port
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
+        return preferred_port
+    
+    # 1. Check if preferred_port exists
+    for p in ports:
+        if p.device.upper() == preferred_port.upper():
+            return p.device
+            
+    # 2. Look for Espressif / USB JTAG / CP210x / CH340 hardware signature
+    for p in ports:
+        desc = (p.description or "").lower()
+        hwid = (p.hwid or "").lower()
+        if "espressif" in desc or "usb serial" in desc or "303a" in hwid or "jtag" in desc or "cp210" in desc or "ch340" in desc:
+            print(f"[AUTO-DETECT] Found ESP32-P4 camera board on {p.device} ({p.description})", flush=True)
+            return p.device
+            
+    # 3. If only one non-bluetooth COM port exists, pick it
+    non_bth = [p.device for p in ports if "bluetooth" not in (p.description or "").lower()]
+    if len(non_bth) == 1:
+        print(f"[AUTO-DETECT] Auto-selected active COM port: {non_bth[0]}", flush=True)
+        return non_bth[0]
+        
+    return preferred_port
+
+port = auto_detect_esp32_port(args.port)
 baud = args.baud
 servo_port = args.servo_port
 servo_baud = args.servo_baud
